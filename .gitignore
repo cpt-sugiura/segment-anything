@@ -1,4 +1,9 @@
+.idea
+/models/
+/sample/
 .nfs*
+tmp*
+venv
 
 # compilation and distribution
 __pycache__
