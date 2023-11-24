@@ -8,6 +8,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 import io
+from typing import Any, Dict, List, Tuple
+from plyer import notification
+
+from app.get_angle import get_angle
 
 # Add the path of 'segment_anything' module to sys.path
 sys.path.append("..")
@@ -17,6 +21,74 @@ from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 def create_directory(directory):
     if not os.path.exists(directory):
         os.makedirs(directory)
+
+
+def get_solar_panel_masks_by_filter(segment_masks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    次の条件に合うようにオブジェクトが1それ以外が0になっている segment_masks を絞り込んでソーラーパネルのマスクのみにする
+        - 長方形である
+        - 他のソーラーパネルと並列に配置されている
+    """
+    rectangles: List[List[Tuple[np.ndarray, cv2.RotatedRect]]] = [[] for _ in range(len(segment_masks))]
+    has_rectangle_masks: List[bool] = [False] * len(segment_masks)
+
+    print('長方形を持つマスクを識別します')
+    # ステップ1: 長方形の識別
+    for i, mask_data in enumerate(segment_masks):
+        mask = mask_data['segmentation']
+        mask = mask.astype(np.uint8)
+        # 外部輪郭を抽出
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for contour in contours:
+            # 輪郭を近似するポリゴンを取得
+            epsilon = 0.05 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            # 近似したポリゴンの頂点数が4つであり、それぞれが90度の角を成す場合、長方形とみなします
+            if len(approx) != 4:
+                continue
+            # (0, 1, 2), (1, 2, 3), (2, 3, 0), (3, 0, 1) の順に回しています
+            angles = [get_angle(approx[i][0], approx[(i + 1) % 4][0], approx[(i + 2) % 4][0]) for i in range(4)]
+            if all(80 <= angle <= 100 for angle in angles):  # 90度に近いかチェック
+                rect = cv2.minAreaRect(contour)
+                box = cv2.boxPoints(rect)
+                box = np.intp(box)
+                rectangles[i].append((box, rect))
+                has_rectangle_masks[i] = True
+    print('長方形を持つマスクを識別しました')
+    print(has_rectangle_masks)
+    # 長方形を持つ mask だけ返す
+    filtered_masks = [mask for i, mask in enumerate(segment_masks) if has_rectangle_masks[i]]  # 並列配置のチェックもここで行う
+    return filtered_masks
+
+    solar_panel_masks = []
+
+    # ステップ2: 長方形の関係性の分析
+    for i, (_, rect1) in enumerate(rectangles):
+        parallel_and_same_direction = True
+
+        for j, (_, rect2) in enumerate(rectangles):
+            if i == j:
+                continue
+
+            if not is_parallel_and_same_direction(rect1, rect2):
+                parallel_and_same_direction = False
+                break
+
+        if parallel_and_same_direction:
+            # ソーラーパネルとして追加
+            solar_panel_masks.append(segment_masks[i])
+
+    return solar_panel_masks
+
+
+def is_parallel_and_same_direction(rect1, rect2):
+    # rect1とrect2が並列かつ同じ方向を向いているかを判断するロジック
+    # ここに方向と角度を比較するコードを実装
+
+    # 例: 角度の差が小さいかどうかで判断
+    angle_diff = abs(rect1[2] - rect2[2])
+    return angle_diff < 10  # 10度以内の差を許容
 
 
 # MaskGenerator Class
@@ -49,30 +121,57 @@ class MaskGenerator:
 
     # Generate masks, color them, and return them along with their counts
     def generate_and_return_colored_masks(self, image):
-        masks = self.mask_generator.generate(image)
-        # masks を結果ファイルとして保存
-        np.save(f"storage/mask/masks_{datetime.now().strftime('%Y-%m-%d %H-%M-%S')}.npy", masks)
+        try:
+            # List[Dict[str, Any]]
+            masks = self.mask_generator.generate(image)
+            # masks を結果ファイルとして保存
+            np.save(f"storage/mask/masks_{datetime.now().strftime('%Y-%m-%d %H-%M-%S')}.npy", masks)
 
-        combined_mask = np.zeros_like(image)
+            combined_mask = np.zeros_like(image)
 
-        np.random.seed(seed=32)
-        for i, mask_data in enumerate(masks):
-            mask = mask_data['segmentation']
-            mask = mask.astype(np.uint8)
+            np.random.seed(seed=32)
+            for i, mask_data in enumerate(masks):
+                mask = mask_data['segmentation']
+                mask = mask.astype(np.uint8)
 
-            random_color = np.random.randint(0, 256, size=(3,))
+                random_color = np.random.randint(0, 256, size=(3,))
 
-            colored_mask = np.zeros_like(image)
-            colored_mask[mask == 1] = random_color
+                colored_mask = np.zeros_like(image)
+                colored_mask[mask == 1] = random_color
 
-            combined_mask += colored_mask
-            combined_mask_colored = combined_mask.copy()
-            combined_mask_colored[colored_mask > 0] = 0
+                combined_mask += colored_mask
 
-        combined_mask = np.clip(combined_mask, 0, 255)
-        combined_mask_3ch = cv2.cvtColor(combined_mask, cv2.COLOR_BGR2RGB)
+            combined_mask = np.clip(combined_mask, 0, 255)
+            combined_mask_3ch = cv2.cvtColor(combined_mask, cv2.COLOR_BGR2RGB)
 
-        return self.show_anns(image, combined_mask_3ch), combined_mask
+            # ソーラーパネルのマスクを抽出して描画
+            solar_panel_masks = get_solar_panel_masks_by_filter(masks)
+            all_solar_panel_mask = np.zeros_like(image)
+            green_color = np.array([0, 255, 0])
+            for i, mask_data in enumerate(solar_panel_masks):
+                mask = mask_data['segmentation']
+                mask = mask.astype(np.uint8)
+                # カラーマスクを適用
+                colored_mask = np.zeros_like(image)
+                colored_mask[mask == 1] = green_color
+                all_solar_panel_mask += colored_mask
+            all_solar_panel_mask = np.clip(all_solar_panel_mask, 0, 255)
+
+            notification.notify(
+                title='処理完了',
+                message='画像の処理が完了しました。',
+                app_name='Image Processor'
+            )
+
+            return self.show_anns(image, combined_mask_3ch), combined_mask, all_solar_panel_mask
+        except Exception as e:
+            # エラー通知
+            notification.notify(
+                title='処理失敗',
+                message='画像処理中にエラーが発生しました。',
+                app_name='Image Processor'
+            )
+            raise e
 
     # Display the masks on top of the original image
     def show_anns(self, image, masks):
@@ -113,9 +212,9 @@ def process_image(image, points_per_side, pred_iou_thresh, stability_score_thres
     mask_gen.load_model()
     mask_gen.initialize_mask_generator(points_per_side, pred_iou_thresh, stability_score_thresh, crop_n_layers,
                                        crop_n_points_downscale_factor, min_mask_region_area)
-    mask_image, combined_mask = mask_gen.generate_and_return_colored_masks(image)
+    mask_image, combined_mask, solar_panel_mask = mask_gen.generate_and_return_colored_masks(image)
     print(f"  end: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}")
-    return org_image, mask_image, combined_mask
+    return org_image, mask_image, combined_mask, solar_panel_mask
 
 
 # Main function to run the application
@@ -139,7 +238,8 @@ if __name__ == "__main__":
     outputs = [
         gr.Image(type="pil", label="Original Image"),
         gr.Image(type="pil", label="Overlay Image"),
-        gr.Image(type="pil", label="Original mask Image")
+        gr.Image(type="pil", label="Original mask Image"),
+        gr.Image(type="pil", label="solar_panel_mask")
     ]
 
     gr.Interface(fn=process_image, inputs=inputs, outputs=outputs).launch()
