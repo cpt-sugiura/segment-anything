@@ -43,7 +43,6 @@ def get_solar_panel_masks_by_filter(segment_masks: List[Dict[str, Any]]) -> List
     rectangles: List[List[Tuple[np.ndarray, cv2.RotatedRect]]] = [[] for _ in range(len(segment_masks))]
     has_rectangle_masks: List[bool] = [False] * len(segment_masks)
 
-    print('長方形を持つマスクを識別します')
     # ステップ1: 長方形の識別
     for i, mask_data in enumerate(segment_masks):
         mask = mask_data['segmentation']
@@ -52,30 +51,12 @@ def get_solar_panel_masks_by_filter(segment_masks: List[Dict[str, Any]]) -> List
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         for contour in contours:
-            # # 輪郭を近似するポリゴンを取得
-            # epsilon = 0.05 * cv2.arcLength(contour, True)
-            # approx = cv2.approxPolyDP(contour, epsilon, True)
-            # # 近似したポリゴンの頂点数が4つであり、それぞれが90度の角を成す場合、長方形とみなします
-            # if len(approx) < 4:
-            #     continue
-            # # 角度チェックの柔軟化
-            # angles = []
-            # for j in range(len(approx)):
-            #     # (0, 1, 2), (1, 2, 3), (2, 3, 0), (3, 0, 1) の順に回しています
-            #     angle = get_angle(approx[j], approx[(j + 1) % len(approx)], approx[(j + 2) % len(approx)])
-            #     angles.append(angle)
-            # ninety_angles = list(filter(lambda x: 80 <= x <= 100, angles))  # 90度に近いかチェック
-            # if len(ninety_angles) == 4:  # 90度に近い角が4つなら長方形に近いとする
             rect = cv2.minAreaRect(contour)
             box = cv2.boxPoints(rect)
             box = np.intp(box)
-            # rectangles[i].append((box, rect))
-            # has_rectangle_masks[i] = True
             if check_rectangle_similarity(mask, rect):
                 rectangles[i].append((box, rect))
                 has_rectangle_masks[i] = True
-    print('長方形を持つマスクを識別しました')
-    print(has_rectangle_masks)
     # 長方形を持つ mask だけ返す
     filtered_masks = [mask for i, mask in enumerate(segment_masks) if has_rectangle_masks[i]]  # 並列配置のチェックもここで行う
     return filtered_masks
