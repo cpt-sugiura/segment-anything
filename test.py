@@ -23,6 +23,17 @@ def create_directory(directory):
         os.makedirs(directory)
 
 
+def check_rectangle_similarity(mask, rect):
+    """
+    マスク領域を囲む長方形がマスクに非常に似た形であるかを評価する関数
+    """
+    mask_area = np.sum(mask)
+    rect_area = cv2.contourArea(cv2.boxPoints(rect))
+
+    similarity = min(mask_area, rect_area) / max(mask_area, rect_area)
+    return similarity > 0.9
+
+
 def get_solar_panel_masks_by_filter(segment_masks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     次の条件に合うようにオブジェクトが1それ以外が0になっている segment_masks を絞り込んでソーラーパネルのマスクのみにする
@@ -41,18 +52,26 @@ def get_solar_panel_masks_by_filter(segment_masks: List[Dict[str, Any]]) -> List
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         for contour in contours:
-            # 輪郭を近似するポリゴンを取得
-            epsilon = 0.05 * cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, epsilon, True)
-            # 近似したポリゴンの頂点数が4つであり、それぞれが90度の角を成す場合、長方形とみなします
-            if len(approx) != 4:
-                continue
-            # (0, 1, 2), (1, 2, 3), (2, 3, 0), (3, 0, 1) の順に回しています
-            angles = [get_angle(approx[i][0], approx[(i + 1) % 4][0], approx[(i + 2) % 4][0]) for i in range(4)]
-            if all(80 <= angle <= 100 for angle in angles):  # 90度に近いかチェック
-                rect = cv2.minAreaRect(contour)
-                box = cv2.boxPoints(rect)
-                box = np.intp(box)
+            # # 輪郭を近似するポリゴンを取得
+            # epsilon = 0.05 * cv2.arcLength(contour, True)
+            # approx = cv2.approxPolyDP(contour, epsilon, True)
+            # # 近似したポリゴンの頂点数が4つであり、それぞれが90度の角を成す場合、長方形とみなします
+            # if len(approx) < 4:
+            #     continue
+            # # 角度チェックの柔軟化
+            # angles = []
+            # for j in range(len(approx)):
+            #     # (0, 1, 2), (1, 2, 3), (2, 3, 0), (3, 0, 1) の順に回しています
+            #     angle = get_angle(approx[j], approx[(j + 1) % len(approx)], approx[(j + 2) % len(approx)])
+            #     angles.append(angle)
+            # ninety_angles = list(filter(lambda x: 80 <= x <= 100, angles))  # 90度に近いかチェック
+            # if len(ninety_angles) == 4:  # 90度に近い角が4つなら長方形に近いとする
+            rect = cv2.minAreaRect(contour)
+            box = cv2.boxPoints(rect)
+            box = np.intp(box)
+            # rectangles[i].append((box, rect))
+            # has_rectangle_masks[i] = True
+            if check_rectangle_similarity(mask, rect):
                 rectangles[i].append((box, rect))
                 has_rectangle_masks[i] = True
     print('長方形を持つマスクを識別しました')
@@ -122,8 +141,8 @@ class MaskGenerator:
     # Generate masks, color them, and return them along with their counts
     def generate_and_return_colored_masks(self, image):
         try:
-            # List[Dict[str, Any]]
-            masks = self.mask_generator.generate(image)
+            masks: List[Dict[str, Any]] = self.mask_generator.generate(image)
+            mask_points = []
             # masks を結果ファイルとして保存
             np.save(f"storage/mask/masks_{datetime.now().strftime('%Y-%m-%d %H-%M-%S')}.npy", masks)
 
